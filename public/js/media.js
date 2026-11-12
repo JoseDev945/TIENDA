@@ -35,7 +35,7 @@ async function uploadToBlob(file, blob, w, height, { onProgress, signal }) {
     result = await upload(`u/${state.me.id}/${safe}`, blob, {
       access: 'public',
       handleUploadUrl: '/api/uploads/token',
-      contentType: /^(image|video|audio)\//.test(blob.type) && blob.type !== 'image/svg+xml' ? blob.type : 'application/octet-stream',
+      contentType: /^(image|video|audio)\//.test(blob.type) && blob.type !== 'image/svg+xml' ? blob.type.split(';')[0] : 'application/octet-stream',
       multipart: blob.size > 8 * 1024 * 1024,
       abortSignal: signal,
       onUploadProgress: (e) => { if (onProgress) onProgress(Math.min(0.98, e.percentage / 100)); },
@@ -116,6 +116,18 @@ export function lightbox(items, index = 0) {
   dlg.showModal();
 }
 
+// Las grabaciones del navegador (webm) no traen su duración y el reproductor mostraría "0:00 / --".
+// Saltar al final obliga al navegador a calcularla; luego se vuelve al inicio.
+function fixDuration(audio) {
+  audio.addEventListener('loadedmetadata', () => {
+    if (audio.duration !== Infinity && !Number.isNaN(audio.duration)) return;
+    const back = () => { audio.removeEventListener('timeupdate', back); audio.currentTime = 0; };
+    audio.addEventListener('timeupdate', back);
+    audio.currentTime = 1e101;
+  }, { once: true });
+  return audio;
+}
+
 // ───────── Adjuntos dentro de un mensaje ─────────
 export function renderAttachments(list) {
   const visual = list.filter((a) => a.kind === 'image');
@@ -139,10 +151,14 @@ export function renderAttachments(list) {
   for (const a of list) {
     if (a.kind === 'video') {
       out.push(h('video', { class: 'att-video', src: a.url, controls: true, preload: 'metadata', playsInline: true }));
+    } else if (a.kind === 'audio' && /^nota-de-voz\./.test(a.name)) {
+      out.push(h('div', { class: 'att-voice' },
+        h('span', { class: 'att-voice-icon', title: 'Nota de voz' }, icon('mic', 18)),
+        fixDuration(h('audio', { src: a.url, controls: true, preload: 'metadata', 'aria-label': 'Nota de voz' }))));
     } else if (a.kind === 'audio') {
       out.push(h('div', { class: 'att-audio' },
         h('span', { class: 'att-name' }, a.name),
-        h('audio', { src: a.url, controls: true, preload: 'none' })));
+        fixDuration(h('audio', { src: a.url, controls: true, preload: 'metadata' }))));
     } else if (a.kind === 'file') {
       out.push(h('a', { class: 'att-file', href: a.download || a.url, download: a.name },
         h('span', { class: 'att-file-icon' }, icon('file', 22)),

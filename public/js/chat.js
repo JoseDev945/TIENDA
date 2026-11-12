@@ -1,5 +1,5 @@
 // El chat: se usa igual en cada publicación y en los mensajes privados.
-import { h, icon, api, bus, state, avatar, fmtClock, fmtDay, toastError, requireAuth, confirmDialog, reportDialog, refreshUnread } from './core.js';
+import { h, icon, api, bus, state, avatar, fmtClock, fmtDay, toast, toastError, requireAuth, confirmDialog, reportDialog, refreshUnread } from './core.js';
 import { emojiPicker, closeEmojiPicker, QUICK } from './emoji.js';
 import { renderAttachments, createUploader, pendingTile } from './media.js';
 
@@ -274,7 +274,6 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
 
     const uploader = createUploader({
       max: 10,
-      onError: toastError,
       onChange: (what, item) => {
         if (what === 'list') {
           tileMap.clear();
@@ -286,7 +285,9 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
           tiles.hidden = uploader.items.length === 0;
         } else if (tileMap.has(item.key)) tileMap.get(item.key).update();
         refresh();
+        if (what === 'done' && autoSend && !uploader.busy) { autoSend = false; send(); }
       },
+      onError: (e) => { autoSend = false; toastError(e); },
     });
     fileInput.addEventListener('change', () => { uploader.addFiles([...fileInput.files]); fileInput.value = ''; });
 
@@ -302,6 +303,74 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
           h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Cancelar respuesta', onclick: () => setReply(null) }, icon('x', 16)));
         ta.focus();
       }
+    }
+
+    // ── Notas de voz ──
+    // Se graba con el micrófono del navegador. Al pulsar enviar, la grabación se sube y se manda sola.
+    const MAX_VOICE_S = 300;
+    let autoSend = false;
+    let rec = null;
+    const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+    const recBar = h('div', { class: 'rec-bar', hidden: true, role: 'status' });
+
+    async function startRec() {
+      if (rec || autoSend) return;
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        toastError(new Error(e && e.name === 'NotAllowedError'
+          ? 'Para grabar, permite el uso del micrófono en tu navegador (en el candado junto a la dirección).'
+          : 'No se encontró un micrófono en este dispositivo.'));
+        return;
+      }
+      const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
+      let mr;
+      try { mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined); } catch {
+        stream.getTracks().forEach((t) => t.stop());
+        toastError(new Error('Este navegador no puede grabar audio.'));
+        return;
+      }
+      const chunks = [];
+      const started = Date.now();
+      const time = h('span', { class: 'rec-time' }, '0:00');
+      rec = { mr, stream, started, send: false };
+      rec.timer = setInterval(() => {
+        const s = Math.floor((Date.now() - started) / 1000);
+        time.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        if (s >= MAX_VOICE_S) stopRec(true);
+      }, 250);
+      mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      mr.onstop = () => {
+        const r = rec;
+        stream.getTracks().forEach((t) => t.stop());
+        clearInterval(r.timer);
+        rec = null;
+        recBar.hidden = true;
+        row.hidden = false;
+        if (!r.send || !chunks.length) return;
+        const mime = (mr.mimeType || type || 'audio/webm').split(';')[0];
+        const ext = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
+        const file = new File(chunks, `nota-de-voz.${ext}`, { type: mime });
+        autoSend = true;
+        uploader.addFiles([file]);
+      };
+      mr.start(250);
+      recBar.replaceChildren(
+        h('button', { type: 'button', class: 'icon-btn', title: 'Descartar', 'aria-label': 'Descartar nota de voz', onclick: () => stopRec(false) }, icon('trash')),
+        h('span', { class: 'rec-dot', 'aria-hidden': 'true' }),
+        h('span', { class: 'rec-label' }, 'Grabando nota de voz'),
+        time,
+        h('button', { type: 'button', class: 'composer-send', title: 'Enviar nota de voz', 'aria-label': 'Enviar nota de voz', onclick: () => stopRec(true) }, icon('send', 18)));
+      row.hidden = true;
+      recBar.hidden = false;
+    }
+    function stopRec(sendIt) {
+      if (!rec) return;
+      // Un toque de menos de un segundo se toma como un error y no se envía.
+      rec.send = sendIt && Date.now() - rec.started >= 800;
+      if (sendIt && !rec.send) toast('La nota de voz es demasiado corta.');
+      if (rec.mr.state !== 'inactive') rec.mr.stop();
     }
 
     let sending = false;
@@ -332,10 +401,16 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
       if (files.length) { e.preventDefault(); uploader.addFiles(files); }
     });
 
+    const row = buildRow();
     const form = h('form', { class: 'composer', onsubmit: (e) => { e.preventDefault(); send(); } },
       replyBar,
       tiles,
-      h('div', { class: 'composer-row' },
+      recBar,
+      row,
+      fileInput);
+
+    function buildRow() {
+      return h('div', { class: 'composer-row' },
         h('button', { type: 'button', class: 'icon-btn', title: 'Adjuntar fotos, videos o archivos', 'aria-label': 'Adjuntar fotos, videos o archivos', onclick: () => fileInput.click() }, icon('clip')),
         ta,
         h('button', {
@@ -347,10 +422,15 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
             refresh();
           }, { keepOpen: true }),
         }, icon('smile')),
-        sendBtn),
-      fileInput);
+        canRecord && h('button', { type: 'button', class: 'icon-btn', title: 'Grabar nota de voz', 'aria-label': 'Grabar nota de voz', onclick: startRec }, icon('mic')),
+        sendBtn);
+    }
 
-    return { el: form, setReply, addFiles: (f) => uploader.addFiles(f) };
+    return {
+      el: form, setReply, addFiles: (f) => uploader.addFiles(f),
+      // Al salir de la pantalla se suelta el micrófono.
+      cancel: () => { if (rec) stopRec(false); },
+    };
   }
 
   // Arrastrar y soltar archivos sobre el chat.
@@ -371,6 +451,7 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
   return {
     el,
     destroy() {
+      if (composer.cancel) composer.cancel();
       offs.forEach((off) => off());
       ro.disconnect();
       closeEmojiPicker();
