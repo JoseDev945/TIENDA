@@ -118,7 +118,7 @@ export function lightbox(items, index = 0) {
 
 // Las grabaciones del navegador (webm) no traen su duración y el reproductor mostraría "0:00 / --".
 // Saltar al final obliga al navegador a calcularla; luego se vuelve al inicio.
-function fixDuration(audio) {
+export function fixDuration(audio) {
   audio.addEventListener('loadedmetadata', () => {
     if (audio.duration !== Infinity && !Number.isNaN(audio.duration)) return;
     const back = () => { audio.removeEventListener('timeupdate', back); audio.currentTime = 0; };

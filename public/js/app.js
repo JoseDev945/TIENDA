@@ -333,7 +333,7 @@ async function viewListing(id) {
     trackRead: mine,
     emptyTitle: 'Nadie ha escrito todavía',
     emptyText: 'Pregunta lo que quieras saber, haz una oferta o deja tu opinión.',
-    placeholder: 'Opina, pregunta u oferta',
+    placeholder: 'Opina u oferta',
   });
   onLeave(chat.destroy);
 
@@ -690,6 +690,7 @@ async function render() {
   }
   const args = match.m.slice(1).map((a) => (a === undefined ? a : decodeURIComponent(a)));
   connectEvents(match.r.room ? match.r.room(...args) : null);
+  document.body.classList.toggle('has-chat', !!match.r.room);
   if (!match.r.room && Date.now() - lastUnread > 20_000) { lastUnread = Date.now(); refreshUnread(); }
   document.documentElement.classList.add('is-loading');
   // Mientras carga la pantalla nueva, la anterior no se puede usar: así nadie escribe

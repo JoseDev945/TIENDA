@@ -1,7 +1,7 @@
 // El chat: se usa igual en cada publicación y en los mensajes privados.
 import { h, icon, api, bus, state, avatar, fmtClock, fmtDay, toast, toastError, requireAuth, confirmDialog, reportDialog, refreshUnread } from './core.js';
 import { emojiPicker, closeEmojiPicker, QUICK } from './emoji.js';
-import { renderAttachments, createUploader, pendingTile } from './media.js';
+import { renderAttachments, createUploader, pendingTile, fixDuration } from './media.js';
 
 const JUMBO = /^(?:\p{Extended_Pictographic}|\p{Emoji_Component}|‍|️|\s)+$/u;
 const URL_RX = /https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g;
@@ -305,70 +305,177 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
       }
     }
 
-    // ── Notas de voz ──
-    // Se graba con el micrófono del navegador. Al pulsar enviar, la grabación se sube y se manda sola.
+    // ── Notas de voz (como en WhatsApp) ──
+    // Se graba con supresión de ruido. Se puede pausar, escuchar lo grabado, seguir grabando,
+    // descartar o enviar. Al enviar, la grabación se sube y se manda sola.
     const MAX_VOICE_S = 300;
     let autoSend = false;
     let rec = null;
     const canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-    const recBar = h('div', { class: 'rec-bar', hidden: true, role: 'status' });
+    const recBar = h('div', { class: 'rec-bar', hidden: true });
+    const fmtSecs = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+    async function openMic() {
+      // El navegador aplica supresión de ruido, cancelación de eco y volumen automático.
+      const audio = { noiseSuppression: true, echoCancellation: true, autoGainControl: true, channelCount: 1 };
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio });
+      } catch (e) {
+        if (e && e.name === 'OverconstrainedError') return navigator.mediaDevices.getUserMedia({ audio: true });
+        throw e;
+      }
+    }
+
+    function micError(e) {
+      const name = e && e.name;
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        return 'Para grabar, permite el uso del micrófono: toca el candado junto a la dirección de la página y activa "Micrófono".';
+      }
+      if (name === 'NotReadableError' || name === 'AbortError') {
+        return 'Otro programa está usando el micrófono (por ejemplo Zoom, Discord o Teams). Ciérralo y vuelve a intentarlo.';
+      }
+      return 'No se encontró un micrófono en este dispositivo.';
+    }
+
+    // Medidor de volumen: muestra que el micrófono capta sonido y avisa si no llega nada.
+    function startMeter(stream, bars, onSilence) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return () => {};
+      let ctx;
+      try { ctx = new Ctx(); } catch { return () => {}; }
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      const started = Date.now();
+      let heard = false;
+      let warned = false;
+      let raf = 0;
+      const loop = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const v of data) sum += ((v - 128) / 128) ** 2;
+        const rms = Math.sqrt(sum / data.length);
+        if (rms > 0.004) heard = true;
+        // Escala suave: la voz normal (con supresión de ruido) llega bajita, así que se amplía.
+        const level = Math.min(1, Math.sqrt(rms) * 2.2);
+        if (!rec || !rec.paused) {
+          bars.forEach((bar, i) => {
+            const k = [0.55, 0.85, 1, 0.8, 0.6][i] || 1;
+            bar.style.transform = `scaleY(${Math.min(1, 0.15 + level * k * (0.7 + Math.random() * 0.3))})`;
+          });
+        }
+        if (!heard && !warned && Date.now() - started > 3000) { warned = true; onSilence(); }
+        raf = requestAnimationFrame(loop);
+      };
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      loop();
+      return () => { cancelAnimationFrame(raf); ctx.close().catch(() => {}); };
+    }
 
     async function startRec() {
       if (rec || autoSend) return;
       let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (e) {
-        toastError(new Error(e && e.name === 'NotAllowedError'
-          ? 'Para grabar, permite el uso del micrófono en tu navegador (en el candado junto a la dirección).'
-          : 'No se encontró un micrófono en este dispositivo.'));
-        return;
-      }
+      try { stream = await openMic(); } catch (e) { toastError(new Error(micError(e))); return; }
       const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
       let mr;
-      try { mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined); } catch {
+      try { mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined); } catch {
         stream.getTracks().forEach((t) => t.stop());
         toastError(new Error('Este navegador no puede grabar audio.'));
         return;
       }
       const chunks = [];
-      const started = Date.now();
+      const mime = () => (mr.mimeType || type || 'audio/webm').split(';')[0];
+      rec = { mr, stream, chunks, send: false, paused: false, elapsed: 0, since: Date.now(), preview: null };
+      const seconds = () => rec.elapsed + (rec.paused ? 0 : (Date.now() - rec.since) / 1000);
+
       const time = h('span', { class: 'rec-time' }, '0:00');
-      rec = { mr, stream, started, send: false };
+      const bars = [0, 1, 2, 3, 4].map(() => h('span'));
+      const meter = h('span', { class: 'rec-meter', 'aria-hidden': 'true' }, bars);
+      const label = h('span', { class: 'rec-label' }, h('span', { class: 'rec-dot', 'aria-hidden': 'true' }), meter, time);
+      const previewBox = h('span', { class: 'rec-preview', hidden: true });
+      const pauseBtn = h('button', { type: 'button', class: 'icon-btn rec-pause', title: 'Pausar', 'aria-label': 'Pausar grabación', onclick: () => togglePause() }, icon('pause'));
+      const hint = h('div', { class: 'rec-hint', hidden: true, role: 'status' },
+        'No se oye nada. Revisa que el micrófono correcto esté elegido en tu navegador o en la configuración de sonido de tu computadora.');
+
       rec.timer = setInterval(() => {
-        const s = Math.floor((Date.now() - started) / 1000);
-        time.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-        if (s >= MAX_VOICE_S) stopRec(true);
+        time.textContent = fmtSecs(seconds());
+        if (seconds() >= MAX_VOICE_S) stopRec(true);
       }, 250);
+      rec.stopMeter = startMeter(stream, bars, () => { hint.hidden = false; });
+
+      // Pausar: se deja de grabar y aparece un reproductor con lo grabado hasta ahora.
+      function togglePause() {
+        if (!rec) return;
+        if (!rec.paused) {
+          rec.elapsed = seconds();
+          rec.paused = true;
+          mr.pause();
+          mr.requestData();
+          setTimeout(() => {
+            if (!rec || !rec.paused) return;
+            if (rec.preview) URL.revokeObjectURL(rec.preview);
+            rec.preview = URL.createObjectURL(new Blob(chunks, { type: mime() }));
+            const audio = h('audio', { src: rec.preview, controls: true, preload: 'metadata', 'aria-label': 'Escuchar lo grabado' });
+            previewBox.replaceChildren(fixDuration(audio));
+            previewBox.hidden = false;
+            label.hidden = true;
+          }, 150);
+          recBar.classList.add('is-paused');
+          pauseBtn.replaceChildren(icon('mic'));
+          pauseBtn.title = 'Seguir grabando';
+          pauseBtn.setAttribute('aria-label', 'Seguir grabando');
+        } else {
+          const player = previewBox.querySelector('audio');
+          if (player) player.pause();
+          previewBox.hidden = true;
+          label.hidden = false;
+          rec.paused = false;
+          rec.since = Date.now();
+          mr.resume();
+          recBar.classList.remove('is-paused');
+          pauseBtn.replaceChildren(icon('pause'));
+          pauseBtn.title = 'Pausar';
+          pauseBtn.setAttribute('aria-label', 'Pausar grabación');
+        }
+      }
+
       mr.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
       mr.onstop = () => {
         const r = rec;
         stream.getTracks().forEach((t) => t.stop());
         clearInterval(r.timer);
+        r.stopMeter();
+        if (r.preview) URL.revokeObjectURL(r.preview);
         rec = null;
         recBar.hidden = true;
+        recBar.classList.remove('is-paused');
         row.hidden = false;
         if (!r.send || !chunks.length) return;
-        const mime = (mr.mimeType || type || 'audio/webm').split(';')[0];
-        const ext = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
-        const file = new File(chunks, `nota-de-voz.${ext}`, { type: mime });
+        const m = mime();
+        const ext = m.includes('mp4') ? 'm4a' : m.includes('ogg') ? 'ogg' : 'webm';
         autoSend = true;
-        uploader.addFiles([file]);
+        uploader.addFiles([new File(chunks, `nota-de-voz.${ext}`, { type: m })]);
       };
+      rec.seconds = seconds;
       mr.start(250);
+
       recBar.replaceChildren(
-        h('button', { type: 'button', class: 'icon-btn', title: 'Descartar', 'aria-label': 'Descartar nota de voz', onclick: () => stopRec(false) }, icon('trash')),
-        h('span', { class: 'rec-dot', 'aria-hidden': 'true' }),
-        h('span', { class: 'rec-label' }, 'Grabando nota de voz'),
-        time,
-        h('button', { type: 'button', class: 'composer-send', title: 'Enviar nota de voz', 'aria-label': 'Enviar nota de voz', onclick: () => stopRec(true) }, icon('send', 18)));
+        h('div', { class: 'rec-row' },
+          h('button', { type: 'button', class: 'icon-btn', title: 'Descartar', 'aria-label': 'Descartar nota de voz', onclick: () => stopRec(false) }, icon('trash')),
+          label,
+          previewBox,
+          pauseBtn,
+          h('button', { type: 'button', class: 'composer-send', title: 'Enviar nota de voz', 'aria-label': 'Enviar nota de voz', onclick: () => stopRec(true) }, icon('send', 18))),
+        hint);
       row.hidden = true;
       recBar.hidden = false;
     }
+
     function stopRec(sendIt) {
       if (!rec) return;
       // Un toque de menos de un segundo se toma como un error y no se envía.
-      rec.send = sendIt && Date.now() - rec.started >= 800;
+      rec.send = sendIt && rec.seconds() >= 0.8;
       if (sendIt && !rec.send) toast('La nota de voz es demasiado corta.');
       if (rec.mr.state !== 'inactive') rec.mr.stop();
     }
