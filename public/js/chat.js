@@ -2,6 +2,7 @@
 import { h, icon, api, bus, state, avatar, fmtClock, fmtDay, toast, toastError, requireAuth, confirmDialog, reportDialog, refreshUnread } from './core.js';
 import { emojiPicker, closeEmojiPicker, QUICK } from './emoji.js';
 import { renderAttachments, createUploader, pendingTile, fixDuration } from './media.js';
+import { openMic, micErrorText, levelMeter } from './audio.js';
 
 const JUMBO = /^(?:\p{Extended_Pictographic}|\p{Emoji_Component}|‍|️|\s)+$/u;
 const URL_RX = /https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g;
@@ -315,68 +316,21 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
     const recBar = h('div', { class: 'rec-bar', hidden: true });
     const fmtSecs = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
-    async function openMic() {
-      // El navegador aplica supresión de ruido, cancelación de eco y volumen automático.
-      const audio = { noiseSuppression: true, echoCancellation: true, autoGainControl: true, channelCount: 1 };
-      try {
-        return await navigator.mediaDevices.getUserMedia({ audio });
-      } catch (e) {
-        if (e && e.name === 'OverconstrainedError') return navigator.mediaDevices.getUserMedia({ audio: true });
-        throw e;
-      }
-    }
-
-    function micError(e) {
-      const name = e && e.name;
-      if (name === 'NotAllowedError' || name === 'SecurityError') {
-        return 'Para grabar, permite el uso del micrófono: toca el candado junto a la dirección de la página y activa "Micrófono".';
-      }
-      if (name === 'NotReadableError' || name === 'AbortError') {
-        return 'Otro programa está usando el micrófono (por ejemplo Zoom, Discord o Teams). Ciérralo y vuelve a intentarlo.';
-      }
-      return 'No se encontró un micrófono en este dispositivo.';
-    }
-
-    // Medidor de volumen: muestra que el micrófono capta sonido y avisa si no llega nada.
+    // Medidor de volumen en la barra de grabación; avisa si el micrófono no capta nada.
     function startMeter(stream, bars, onSilence) {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return () => {};
-      let ctx;
-      try { ctx = new Ctx(); } catch { return () => {}; }
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      ctx.createMediaStreamSource(stream).connect(analyser);
-      const data = new Uint8Array(analyser.fftSize);
-      const started = Date.now();
-      let heard = false;
-      let warned = false;
-      let raf = 0;
-      const loop = () => {
-        analyser.getByteTimeDomainData(data);
-        let sum = 0;
-        for (const v of data) sum += ((v - 128) / 128) ** 2;
-        const rms = Math.sqrt(sum / data.length);
-        if (rms > 0.004) heard = true;
-        // Escala suave: la voz normal (con supresión de ruido) llega bajita, así que se amplía.
-        const level = Math.min(1, Math.sqrt(rms) * 2.2);
-        if (!rec || !rec.paused) {
-          bars.forEach((bar, i) => {
-            const k = [0.55, 0.85, 1, 0.8, 0.6][i] || 1;
-            bar.style.transform = `scaleY(${Math.min(1, 0.15 + level * k * (0.7 + Math.random() * 0.3))})`;
-          });
-        }
-        if (!heard && !warned && Date.now() - started > 3000) { warned = true; onSilence(); }
-        raf = requestAnimationFrame(loop);
-      };
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-      loop();
-      return () => { cancelAnimationFrame(raf); ctx.close().catch(() => {}); };
+      return levelMeter(stream, (level) => {
+        if (rec && rec.paused) return;
+        bars.forEach((bar, i) => {
+          const k = [0.55, 0.85, 1, 0.8, 0.6][i] || 1;
+          bar.style.transform = `scaleY(${Math.min(1, 0.15 + level * k * (0.7 + Math.random() * 0.3))})`;
+        });
+      }, onSilence);
     }
 
     async function startRec() {
       if (rec || autoSend) return;
       let stream;
-      try { stream = await openMic(); } catch (e) { toastError(new Error(micError(e))); return; }
+      try { stream = await openMic(); } catch (e) { toastError(new Error(micErrorText(e))); return; }
       const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
       let mr;
       try { mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined); } catch {
@@ -396,7 +350,7 @@ export function createChat({ room, canModerate = false, ownerId = null, trackRea
       const previewBox = h('span', { class: 'rec-preview', hidden: true });
       const pauseBtn = h('button', { type: 'button', class: 'icon-btn rec-pause', title: 'Pausar', 'aria-label': 'Pausar grabación', onclick: () => togglePause() }, icon('pause'));
       const hint = h('div', { class: 'rec-hint', hidden: true, role: 'status' },
-        'No se oye nada. Revisa que el micrófono correcto esté elegido en tu navegador o en la configuración de sonido de tu computadora.');
+        'No se oye nada. Elige otro micrófono en ', h('a', { href: '/ajustes' }, 'Ajustes'), ' o revisa la configuración de sonido de tu computadora.');
 
       rec.timer = setInterval(() => {
         time.textContent = fmtSecs(seconds());

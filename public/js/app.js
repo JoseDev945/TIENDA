@@ -6,6 +6,7 @@ import {
 import { createChat, react, renderReactions } from './chat.js';
 import { emojiPicker, closeEmojiPicker } from './emoji.js';
 import { lightbox, createUploader, pendingTile, uploadFile } from './media.js';
+import { audioSettings } from './audio.js';
 
 const header = h('header', { class: 'top' });
 const view = h('main', { id: 'view' });
@@ -45,6 +46,7 @@ function renderHeader() {
       h('a', { href: userPath(me) }, icon('user', 18), 'Mi perfil y publicaciones',
         state.unread.listings > 0 && h('span', { class: 'pill' }, String(state.unread.listings))),
       h('a', { href: '/guardados' }, icon('bookmark', 18), 'Guardados'),
+      h('a', { href: '/ajustes' }, icon('sliders', 18), 'Ajustes'),
       me.admin && h('a', { href: '/moderacion' }, icon('shield', 18), 'Moderación'),
       h('button', { type: 'button', onclick: async () => { await logout(); go('/'); } }, icon('logout', 18), 'Salir'));
     const btn = h('button', { class: 'avatar-btn', type: 'button', 'aria-label': 'Tu cuenta', 'aria-haspopup': 'true' },
@@ -516,7 +518,7 @@ async function viewProfile(username) {
   const actions = p.isMe
     ? [
       h('button', { class: 'btn', type: 'button', onclick: editProfileDialog }, icon('edit', 18), 'Editar perfil'),
-      h('button', { class: 'btn', type: 'button', onclick: newAccessCode }, icon('key', 18), 'Código de acceso'),
+      h('a', { class: 'btn', href: '/ajustes' }, icon('sliders', 18), 'Ajustes'),
     ]
     : [
       !u.banned && h('button', {
@@ -561,6 +563,25 @@ async function viewSaved() {
     d.items.length
       ? h('div', { class: 'grid' }, d.items.map(card))
       : emptyState('No has guardado nada', 'Toca "Guardar" en cualquier publicación para tenerla aquí.', h('a', { class: 'btn btn-primary', href: '/' }, 'Ver publicaciones')));
+}
+
+// ───────────────────────── Ajustes ─────────────────────────
+async function viewSettings() {
+  if (!state.me) return gate('Crea tu usuario para ver tus ajustes', 'Aquí eliges tu micrófono y administras tu cuenta.');
+  document.title = `Ajustes | ${state.site.name}`;
+  const audio = audioSettings();
+  onLeave(audio.destroy);
+  return h('div', { class: 'page narrow settings' },
+    h('h1', null, 'Ajustes'),
+    audio.el,
+    h('section', { class: 'settings-card', 'aria-labelledby': 'ajustes-cuenta' },
+      h('h2', { id: 'ajustes-cuenta' }, 'Cuenta'),
+      h('div', { class: 'settings-row' },
+        h('div', null, h('strong', null, 'Perfil'), h('small', { class: 'muted' }, 'Tu foto y lo que cuentas de ti.')),
+        h('button', { class: 'btn', type: 'button', onclick: editProfileDialog }, icon('edit', 18), 'Editar perfil')),
+      h('div', { class: 'settings-row' },
+        h('div', null, h('strong', null, 'Código de acceso'), h('small', { class: 'muted' }, 'Sirve para entrar con tu usuario desde otro dispositivo.')),
+        h('button', { class: 'btn', type: 'button', onclick: newAccessCode }, icon('key', 18), 'Generar código nuevo'))));
 }
 
 // ───────────────────────── Mensajes privados ─────────────────────────
@@ -668,6 +689,7 @@ const ROUTES = [
   { rx: /^\/usuario\/([^/]+)$/, view: viewProfile },
   { rx: /^\/mensajes(?:\/(\d+))?$/, view: viewMessages, room: (id) => (id ? 'd' + id : null) },
   { rx: /^\/guardados$/, view: viewSaved },
+  { rx: /^\/ajustes$/, view: viewSettings },
   { rx: /^\/moderacion$/, view: viewAdmin },
 ];
 
