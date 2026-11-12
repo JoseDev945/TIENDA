@@ -1,0 +1,58 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": [
+    "iad1"
+  ],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    },
+    "api/eventos.js": {
+      "maxDuration": 300,
+      "supportsCancellation": true
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/events",
+      "destination": "/api/eventos"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api?__ruta=$1"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; img-src 'self' data: blob: https://*.public.blob.vercel-storage.com; media-src 'self' blob: https://*.public.blob.vercel-storage.com; connect-src 'self' https://vercel.com https://*.vercel.com https://*.vercel-storage.com; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "same-origin"
+        }
+      ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/limpieza",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}

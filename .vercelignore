@@ -1,0 +1,9 @@
+data/
+_version_anterior/
+*.bat
+.env*
+servidor-local.js
+PLAN.md
+LEEME.md
+DESPLEGAR.md
+variables-ejemplo.txt

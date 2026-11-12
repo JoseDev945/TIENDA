@@ -1,0 +1,9 @@
+# Copia este archivo con el nombre ".env.local" si quieres probar la tienda en tu computadora,
+# o deja que Vercel lo cree por ti con:  npx vercel env pull .env.local
+
+# Dirección de tu base de datos Neon (Vercel > tu proyecto > Storage > Neon)
+DATABASE_URL=postgresql://usuario:clave@ep-ejemplo-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
+
+# Token de tu almacén Vercel Blob. Si lo dejas vacío, en tu computadora los archivos
+# se guardan en la carpeta data/uploads.
+BLOB_READ_WRITE_TOKEN=
