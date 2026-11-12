@@ -346,7 +346,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 }
 .chat-body { position: relative; flex: 1; min-height: 0; }
 .chat-scroll { height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 8px 0 14px; display: flex; flex-direction: column; }
-.chat-list { margin-top: auto; }
+/* Los mensajes empiezan arriba: con pocos mensajes no queda un hueco vacío encima. */
 .chat-more { align-self: center; margin: 8px 0; }
 .chat-empty { margin: auto; display: grid; gap: 4px; padding: 24px; text-align: center; color: var(--ink-3); max-width: 34ch; }
 .chat-empty strong { color: var(--ink); font: 700 17px/1.3 var(--display); }
